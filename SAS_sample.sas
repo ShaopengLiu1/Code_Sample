@@ -1,0 +1,465 @@
+# Shaopeng's SAS sample
+# Line 1-300 are daily fundation codes 
+# Line 300-400 are project codes for bootstrap resampling
+# Line 400-470 are project codes for recursive selection for optimization
+
+# 1, overview:
+# 1.1, Sample mean comparison: t-test and Wilcoxon's test
+data one;
+set two;
+sbpdiff=sbp2-sbp1;
+label sbpdiff='change in sbp from pre to post';
+
+proc ttest; 
+classes group;
+var platelet;
+title "Unpaired t-test on platelet data"
+
+proc means n mean std stderr t prt;
+var sbpdiff;
+title "Paired t-test on sbp data";
+
+proc npar1way wilcoxon; 
+classes group;
+var isi;
+title "Wilcoxon test on infarct size data";
+rn;
+
+# 2, categorical analysis:
+# 2.1, Binomial distribution and proportion estimate
+proc freq data=<my_data>;
+table var / binomial (level=I);  # use binomialc option for continuity correction
+table var / binomial (p=0.5 level=I);  # compare proportion
+table var / binomial (equiv p=0.5 level=I margin=0.1); #equivelent test
+table var / binomial (sup p=0.5 level=I margin=0.1); #superiority test
+table var / binomial (noninf p=0.5 level=I margin=0.1); #noninferiority example
+title I "Proportion with complete response"
+run;
+
+# 2.2, Chi-square:
+proc freq data=<my_data>;
+table prefer / nocum chisq testp=(20 80); title "Chi-square goodness-of-fit test";
+table prefer*flavor / nocum chisq; title "Chi-square test of Independence";
+run;
+
+# 2.3, Fisher Exact test:
+proc freq data=<my_data>;
+table flavor*prefer / nocum fisher;
+title "Fisher's Exact test";
+run;
+
+# 2.4, ordinal category: trend
+proc freq data=<my_data>;
+table flavor * prefer / nocum trend jt;
+title "CA and JT tests";
+run;
+
+# 2.5, Gamma and Kendall's tau
+proc freq data=one;
+table bp*weight /chisq measures cl;
+title "gamma and kendalls tau for short ordinal scales";
+run;
+
+# 2.6, CMH: common risk and odds ratio
+proc freq data=one;
+tables gender * treatment * response / cmh;
+title "Effect of Treatment on XXX controlling for gender";
+run;
+
+# 3, Linear model: proc reg and proc glm
+# 3.1, ANOVA with 
+proc format;
+value marrige
+1 = 'married'
+2 = 'widowed'
+3 = 'separated'
+4 = 'divorced'
+5 = 'never married';
+run;
+
+data one;
+set oasis.baseline;
+IF IDPROJI < 9000; * delete duplicate IDs;
+dep_sx = (DLEAT=5) + (DLLW=5) + (DLGW=5) + (DLSLP=5) + (DLTMS=5) + (DLTIRE=5) + (DLSLOW=5) + (DLHYP=5) 
++ (DLSEX=5) + (DLGUILT=5) + (DLCONCEN=5) + (DLMIXED=5) + (DLDEAD=5) + (DLDIE=5) + (DLSUIC=5) + (DLATTP =5);
+label dep_sx='# depression symptoms';
+format marital marrige.;
+keep dep_sx marital haspets age;
+run;
+
+proc glm data=one order=formatted; 
+classes marital;
+model dep_sx = marital / solution;
+contrast 'married vs separated' marital -1 0 1 0 0 ;  * for question A;
+contrast 'mean of widowed and divorced vs married' marital 2 -1 0 -1 0; * for question B;
+run;
+
+
+# 3.2, Linear regression
+data temp;
+set fhs.fhsdat;
+proc sgplot data=temp;
+scatter x=_age y=_bmi;
+run;
+
+proc glm data=temp2;
+mode _bmi = _age agesq agecu / SS1;
+title "cubic linear regression";
+run;
+
+proc reg data=temp3;
+model _bmi = _age trr diastolc systolic / 
+selection = stepwise sle=0.1 sls=0.1 details;
+title "backward and forward selection";
+plot residual. * predicted. ;
+run;
+
+# 3.2.2, mixed model (random effect and fixed effect)
+proc mixed data=long;
+class id group time;
+model y = group time time*group / noint s ddfm=betwithin;
+repeated time / subject=id type=un;
+
+contrast 'trt-plc at month 1' group 1 -1 group*time 1 0 0 -1 0 0 /E;
+contrast 'trt-plc at month 2' group 1 -1 group*time 0 1 0 0 -1 0 /E;
+contrast 'trt-plc at month 3' group 1 -1 group*time 0 0 1 0 0 -1 /E;
+run;
+
+
+# 3.3, Logistic (GLM)
+proc logistic data=hw order=internal;
+model opentime = age sex nowdep haspets worknow voluntr / RL details 
+selection=stepwise sle=.1 sls=.1 lackfit rsquare;
+run;
+
+data one;
+agecoeff = 0.1255;	* by 1 increment;
+sexcoeff = 0.4837;	*male for 1, female for 2;
+workcoeff = -0.6096;	* work for 1, non work for 2;
+voluncoeff = -0.3335;	* volun for 1, non volun for 0;
+intercept = -11.2014;
+logodds = intercept + 75*agecoeff + 1*sexcoeff + 0*workcoeff + 0*voluncoeff;
+run;
+
+# 3.3.2, Possion (GLM)
+proc genmod data=melanoma order=data;
+class age region;
+model cases=region age / dist=poisson link=log offset=ltotal;
+run;
+
+# 3.4, Survival analysis 
+data sum2;
+length end_date 8;
+event=0;	*event means censored;
+format end_date mmddyy8.;
+set sum;
+if outdate=. & falldat=. then do; end_date='08Dec1990'd; event=1; end;
+else if outdate=. & falldat>. then end_date=falldat;
+else if outdate>. & falldat=. then do; end_date=outdate; event=1; end;
+else if outdate < falldat then do; end_date=falldat; event=0; end;  *5 special situation;
+else if outdate > falldat then end_date=falldat;
+else end_date=.;
+long = end_date - date;
+if long < 0 then delete;
+run;
+proc contents data=sum2; *(1355 obs);
+run;
+
+proc lifetest method=life intervals=0 to 1200 by 50 plots=(s,h);
+time long*event(1);
+strata sex;
+title 'homework 2';
+run;
+
+proc lifetest data=sa_11 plots=(s, ls, lls)
+method=KM Nelson conftype=LOGLOG confband=all
+plots=survival(cl cb=ep strata=panel);
+time time*indicator(0);
+strata group;
+run;
+
+# 4, study design
+# 4.1, resampling
+proc surveyselect data=hrt out=hrtboot_placebo
+seed=12345678
+method=urs
+samprate=1
+outhits
+rep=100;
+where (treatment="Placebo");
+run;
+
+proc surveyselect data=hrt out=hrtboot_aspirin
+seed=12345678
+method=urs
+samprate=1
+outhits
+rep=100;
+where (treatment="Aspirin");
+run;
+
+
+proc surveyselect data=jhs method=srs
+seed=20170425 n=(15 12 13) out=sample2;
+strata grade;
+run;
+
+# 4.2, study plan assignment
+proc plan seed=&seed;
+factors block=40 random group=6 / noprint;
+output out=randschedule
+group nvals=(1 1 1 2 2 2)
+random;
+run;
+
+%macro strrand;
+%let seed=20170328;
+
+*generate 3 seeds save in dataset ranum4, age cat 1 2 3;
+
+data rannum4(keep=seed);
+do i=1 to 3;
+rannum=ranuni(&seed);
+seed=int(rannum*1000000);
+end;
+run;
+
+proc sql noprint;
+select seed 
+into :seedsz1 - :seedsz3
+from rannum4
+quit;
+
+%do i=1 %to 3;
+proc plan seed=&&seedsz&i;
+factors block=30 random group=6 /noprint;
+output out=datasz&i
+group nvals=(1 2 2 3 3 3)
+random;
+run;
+
+data data&i;
+set datasz&i;
+age=&i;
+run;
+%end;
+
+data sch;
+set
+%do i=1 %to 3;
+data&i %end;
+;
+run;
+
+proc print data=sch;
+run;
+%mend strrand;
+
+%strrand;
+
+
+# 4.3, power calculation
+proc power;
+twosamplesurvival test=logrank
+hazardratio=0.576
+refsurvexphazard=0.241
+accrualtime=2
+totaltime=5
+ntotal=.
+power=0.8;
+run;
+
+# 4.4, group sequential design
+ods graphics on;
+proc seqdesign altref=0.15
+				errspend
+				stopprob
+				plots=errspend
+				;
+
+onesidePeto: design method=peto
+			nstages=3
+			alt=upper
+			stop=both
+			alpha=0.025 beta=0.1;
+samplesize model=twosamplefreq (nullprop=0.6  test=prop);
+ods output Boundary=Bnd_Count;
+ods graphics off;
+
+
+
+
+
+
+
+
+
+
+
+
+# Project: Bootstrap Resampling
+%macro resample(k0,total=100,itera=2000,boots=100);
+
+%include "/home/shaopengliu/Outlier_Detecting/MLE_Single.sas";
+
+data GaSam(drop=N r m j k);
+  call streaminit(123);
+  N=&total;
+  r=5;
+  m=18;
+  array iteration[1:%eval(&itera)];
+  do id=1 to N;
+    if id<=%eval(&total-&k0) then do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',r);
+    end;
+    else do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',2);
+      do k=1 to (m-1);
+        iteration[j]=iteration[j]+2*rand('gamma',2);
+      end;
+    end;
+    output;
+  end;
+run;
+
+data output; label counts1="Number of outliers 1" counts2="Number of outliers 2"
+                   scale1="Estimated scale1" scale2="Estimated scale2";
+run;
+
+%do i=1 %to %eval(&itera);
+  data iteration; set gasam; keep iteration%eval(&i);
+  run;
+  %let r1=0;
+  
+  proc sort data=gasam(keep=iteration%eval(&i)) out=iteration2; by iteration%eval(&i);
+  data iteration2; set iteration2(obs=%eval(&total-10));run;
+  %let r2=0;
+  
+  %do j=1 %to %eval(&boots);
+    proc surveyselect data=iteration out=temp1 NOPRINT
+      method=urs sampsize=%eval(&total-10) outhits;
+    run;
+    
+    proc means noprint data=temp1;
+      var iteration%eval(&i);
+      output out=temp n=__n var=__var mean=__mean;
+    run;
+    
+    data _null_;set temp; call symput('scale1',__n*__mean*__mean/__var/(__n-1));
+    run;
+    
+    %let r1=%sysevalf(&r1+&scale1);
+    
+    proc surveyselect data=iteration2 out=temp2 NOPRINT
+      method=urs sampsize=%eval(&total-10) outhits;
+    run;
+    
+    proc means noprint data=temp2;
+      var iteration%eval(&i);
+      output out=temp n=__n var=__var mean=__mean;
+    run;
+    
+    data _null_;set temp; call symput('scale2',__n*__mean*__mean/__var/(__n-1));
+    run;
+    
+    %let r2=%sysevalf(&r2+&scale2);
+  %end;
+  
+  %let r1=%sysevalf(&r1/&boots);
+  %let r2=%sysevalf(&r2/&boots);
+  
+  data temp1; label counts="Proportion";
+  data temp2; label counts="Proportion";
+  run;
+  
+  %mle(iteration%eval(&i),k=10,alpha=0.05,r=&r1,data=gasam,data2=temp1,id=id);
+  %mle(iteration%eval(&i),k=10,alpha=0.05,r=&r2,data=gasam,data2=temp2,id=id);
+  
+  data _null_; set temp1; call symput('k1',counts);
+  data _null_; set temp2; call symput('k2',counts);
+  run;
+
+  data temp; counts1=&k1; counts2=&k2; scale1=&r1; scale2=&r2;
+  data output; set output temp;
+  run;
+%end;
+
+title "#outliers=&k0";
+proc freq data=output; tables counts1 counts2;
+proc means data=output; var scale1 scale2;
+run;
+
+%mend;
+
+
+
+
+
+
+
+# Project: Recursive optimization
+%macro recursive(k0,total=100,itera=2000);
+
+%include "/home/shaopengliu/Outlier_Detecting/MLE_Single.sas";
+
+data GaSam(drop=N r m j k);
+  call streaminit(123);
+  N=&total;
+  r=5;
+  m=18;
+  array iteration[1:%eval(&itera)];
+  do id=1 to N;
+    if id<=%eval(&total-&k0) then do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',r);
+    end;
+    else do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',2);
+      do k=1 to (m-1);
+        iteration[j]=iteration[j]+2*rand('gamma',2);
+      end;
+    end;
+    output;
+  end;
+run;
+
+data output; label counts="Number of outliers" scale="Estimated scale";
+run;
+
+%do i=1 %to %eval(&itera);
+  %let k=-1;
+  %let scale=0;
+  
+  %do %until(&k>&ka);
+    %let k=%eval(&k+1);
+    %let scale0=&scale;
+    proc sort data=gasam(keep=iteration%eval(&i)) out=removed ; by iteration%eval(&i);
+    data removed; set removed(obs=%eval(&total-&k));run; 
+      
+    proc means noprint data=removed;
+      var iteration%eval(&i);
+      output out=temp n=__n var=__var mean=__mean;
+    run;
+  
+    data _null_;set temp; call symput('scale',__n*__mean*__mean/__var/(__n-1));
+    run;
+    
+    data temp1; label counts="Proportion";
+    run;
+    
+    %mle(iteration%eval(&i),k=10,alpha=0.05,r=&scale,data=gasam,data2=temp1,id=id);
+  
+    data _null_; set temp1; call symput('ka',counts);
+    run;
+  %end;
+  
+  data temp2; counts=&ka; scale=&scale0;
+  data output; set output temp2;
+  run;
+%end;
+
+title "#outliers=&k0";
+proc freq data=output; tables counts;
+proc means data=output; var scale;
+run;
+
+%mend;
