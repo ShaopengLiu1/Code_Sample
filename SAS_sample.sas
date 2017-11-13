@@ -1,7 +1,319 @@
 # Shaopeng's SAS sample
-# Line 1-300 are daily fundation codes 
-# Line 300-400 are project codes for bootstrap resampling
-# Line 400-470 are project codes for recursive selection for optimization
+# part1 (line 7-140) : SAS class final project: data cleaning, and modeling for SPB and DBP 
+# part2 (line 150-244): SAS macro for bootstrap resampling
+# part3 (line 250-319): SAS macro for recursive selection for optimization
+# part4 (line 320-600): frequently used SAS procedures and comman
+###########################################
+# Part1, SAS class final project:  
+# 1.1, import file
+data DEMOG;
+infile "/home/gems/m21-503/final/demog.csv" dlm=',' firstobs=2 missover pad dsd;
+length ID $12;
+length race $32 studyno $16;			
+informat DOB mmddyy10. visitdat mmddyy10.;
+input gender $ dob studyno$ race $ visitdat age id$;
+format DOB mmddyy10. visitdat mmddyy10.;
+label race="race recorded by country, balck/white and hispanic" dob="date of birth";
+run;
+
+proc print data=demog(obs=20) label;
+proc contents data=demog;
+run;
+
+# 1.2, merge correlated data
+libname final "/home/gems/m21-503/final";
+
+proc sort data=demog out=demog2;
+by ID;
+proc sort data=final.bp out=bp;
+by id;
+proc sort data=final.studydata out=studydata;
+by id;
+run;
+
+data mydata2;
+merge demog2(IN=in1) bp(IN=in2) studydata(IN=in3);
+by id;
+if in1 & in2 & in3;
+run;
+
+proc print data=mydata2(obs=20);
+proc contents data=mydata2;
+run;
+
+# 1.3, data step edit
+data mydata3;
+set mydata2;
+format _bmi 5.1 _map 6.1;
+if age >= 50 then old=1;
+else if 0 <= age <50 then old=2;
+else old=.;
+label old="50 or older as 1, less than 50 as 2";
+whratio = waist / hip;
+label whratio = "ratio of waist over hip";
+drop waist hip;
+run;
+
+proc print data=mydata3(obs=20);
+proc contents data=mydata3;
+run;
+
+# 1.4, add format
+proc format;
+value myfmt
+1 = "Older Subjects"
+2 = "Younger Subjects";
+run;
+
+data mydata5;
+set mydata3;
+format old myfmt.;
+run;
+
+# 1.5, data tarnsformation
+data mydata6;
+set mydata5;
+if race="Black: Non Hispanic" or race="White: Non Hispanic";
+rename _sbp=sbp _dbp=dbp;
+new_race = substr(race, 1,5);
+sum_alcohol = sum(beer, wine, liqr, cooler, sake);
+run;
+
+# 1.6, basic stats and plots with ODS
+ODS rtf file="/home/shaopeng.liu/final9.rtf";
+
+proc sort data=mydata5 out=mydata7;
+by race;
+run;
+proc means data=mydata7;
+var _sbp;
+by race;
+run;
+/* The black subjects have higher average systolic blood pressure. */
+
+proc sort data=mydata5 out=mydata8;
+by studyno;
+proc freq data=mydata8;
+tables smokenow /missing;
+by studyno;
+run;
+/* So the GenNet has the highest rate of smoking. */
+
+ODS rtf close;
+
+proc sgplot data=mydata6;
+histogram whratio;
+run;
+
+* This result is for Black/White only;
+ODS graphics on / imagename="Alcohol" imagefmt=jpg;
+proc sgplot data=mydata6;
+hbar sum_alcohol /missing;
+run;
+ODS graphics on / reset=ALL;
+
+# 1.7, use macro to edit data
+%macro calmean(data= , var=, out= );	*just store the result for convenience;
+proc means data=&data N NMISS mean;
+var &var;
+output out=&out;
+run;
+%mend calmean;
+
+* run by self;
+%calmean(data=lsp.final, var=sbp, out=sbpout);
+%calmean(data=lsp.final, var=dbp, out=dbpout);
+
+proc print data=sbpout;
+proc print data=dbpout;
+run;
+
+# 1.8, find correlation and model the variable
+proc corr data=lsp.final;
+var sbp dbp;
+run;
+
+proc reg data=lsp.final;
+model sbp=dbp;
+run;
+
+###########################################
+
+
+
+
+
+
+
+# Part2, bootstrap resampling
+# Project: Bootstrap Resampling
+%macro resample(k0,total=100,itera=2000,boots=100);
+
+%include "/home/shaopengliu/Outlier_Detecting/MLE_Single.sas";
+
+data GaSam(drop=N r m j k);
+  call streaminit(123);
+  N=&total;
+  r=5;
+  m=18;
+  array iteration[1:%eval(&itera)];
+  do id=1 to N;
+    if id<=%eval(&total-&k0) then do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',r);
+    end;
+    else do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',2);
+      do k=1 to (m-1);
+        iteration[j]=iteration[j]+2*rand('gamma',2);
+      end;
+    end;
+    output;
+  end;
+run;
+
+data output; label counts1="Number of outliers 1" counts2="Number of outliers 2"
+                   scale1="Estimated scale1" scale2="Estimated scale2";
+run;
+
+%do i=1 %to %eval(&itera);
+  data iteration; set gasam; keep iteration%eval(&i);
+  run;
+  %let r1=0;
+  
+  proc sort data=gasam(keep=iteration%eval(&i)) out=iteration2; by iteration%eval(&i);
+  data iteration2; set iteration2(obs=%eval(&total-10));run;
+  %let r2=0;
+  
+  %do j=1 %to %eval(&boots);
+    proc surveyselect data=iteration out=temp1 NOPRINT
+      method=urs sampsize=%eval(&total-10) outhits;
+    run;
+    
+    proc means noprint data=temp1;
+      var iteration%eval(&i);
+      output out=temp n=__n var=__var mean=__mean;
+    run;
+    
+    data _null_;set temp; call symput('scale1',__n*__mean*__mean/__var/(__n-1));
+    run;
+    
+    %let r1=%sysevalf(&r1+&scale1);
+    
+    proc surveyselect data=iteration2 out=temp2 NOPRINT
+      method=urs sampsize=%eval(&total-10) outhits;
+    run;
+    
+    proc means noprint data=temp2;
+      var iteration%eval(&i);
+      output out=temp n=__n var=__var mean=__mean;
+    run;
+    
+    data _null_;set temp; call symput('scale2',__n*__mean*__mean/__var/(__n-1));
+    run;
+    
+    %let r2=%sysevalf(&r2+&scale2);
+  %end;
+  
+  %let r1=%sysevalf(&r1/&boots);
+  %let r2=%sysevalf(&r2/&boots);
+  
+  data temp1; label counts="Proportion";
+  data temp2; label counts="Proportion";
+  run;
+  
+  %mle(iteration%eval(&i),k=10,alpha=0.05,r=&r1,data=gasam,data2=temp1,id=id);
+  %mle(iteration%eval(&i),k=10,alpha=0.05,r=&r2,data=gasam,data2=temp2,id=id);
+  
+  data _null_; set temp1; call symput('k1',counts);
+  data _null_; set temp2; call symput('k2',counts);
+  run;
+
+  data temp; counts1=&k1; counts2=&k2; scale1=&r1; scale2=&r2;
+  data output; set output temp;
+  run;
+%end;
+
+title "#outliers=&k0";
+proc freq data=output; tables counts1 counts2;
+proc means data=output; var scale1 scale2;
+run;
+
+%mend;
+####################################################
+
+
+
+# Part3, recursive selection for optimization
+# Project: Recursive optimization
+%macro recursive(k0,total=100,itera=2000);
+
+%include "/home/shaopengliu/Outlier_Detecting/MLE_Single.sas";
+
+data GaSam(drop=N r m j k);
+  call streaminit(123);
+  N=&total;
+  r=5;
+  m=18;
+  array iteration[1:%eval(&itera)];
+  do id=1 to N;
+    if id<=%eval(&total-&k0) then do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',r);
+    end;
+    else do j=1 to %eval(&itera);
+      iteration[j]=2*rand('gamma',2);
+      do k=1 to (m-1);
+        iteration[j]=iteration[j]+2*rand('gamma',2);
+      end;
+    end;
+    output;
+  end;
+run;
+
+data output; label counts="Number of outliers" scale="Estimated scale";
+run;
+
+%do i=1 %to %eval(&itera);
+  %let k=-1;
+  %let scale=0;
+  
+  %do %until(&k>&ka);
+    %let k=%eval(&k+1);
+    %let scale0=&scale;
+    proc sort data=gasam(keep=iteration%eval(&i)) out=removed ; by iteration%eval(&i);
+    data removed; set removed(obs=%eval(&total-&k));run; 
+      
+    proc means noprint data=removed;
+      var iteration%eval(&i);
+      output out=temp n=__n var=__var mean=__mean;
+    run;
+  
+    data _null_;set temp; call symput('scale',__n*__mean*__mean/__var/(__n-1));
+    run;
+    
+    data temp1; label counts="Proportion";
+    run;
+    
+    %mle(iteration%eval(&i),k=10,alpha=0.05,r=&scale,data=gasam,data2=temp1,id=id);
+  
+    data _null_; set temp1; call symput('ka',counts);
+    run;
+  %end;
+  
+  data temp2; counts=&ka; scale=&scale0;
+  data output; set output temp2;
+  run;
+%end;
+
+title "#outliers=&k0";
+proc freq data=output; tables counts;
+proc means data=output; var scale;
+run;
+
+%mend;
+
+
+###################################################
+
 
 # 1, overview:
 # 1.1, Sample mean comparison: t-test and Wilcoxon's test
@@ -297,99 +609,6 @@ ods graphics off;
 
 
 
-# Project: Bootstrap Resampling
-%macro resample(k0,total=100,itera=2000,boots=100);
-
-%include "/home/shaopengliu/Outlier_Detecting/MLE_Single.sas";
-
-data GaSam(drop=N r m j k);
-  call streaminit(123);
-  N=&total;
-  r=5;
-  m=18;
-  array iteration[1:%eval(&itera)];
-  do id=1 to N;
-    if id<=%eval(&total-&k0) then do j=1 to %eval(&itera);
-      iteration[j]=2*rand('gamma',r);
-    end;
-    else do j=1 to %eval(&itera);
-      iteration[j]=2*rand('gamma',2);
-      do k=1 to (m-1);
-        iteration[j]=iteration[j]+2*rand('gamma',2);
-      end;
-    end;
-    output;
-  end;
-run;
-
-data output; label counts1="Number of outliers 1" counts2="Number of outliers 2"
-                   scale1="Estimated scale1" scale2="Estimated scale2";
-run;
-
-%do i=1 %to %eval(&itera);
-  data iteration; set gasam; keep iteration%eval(&i);
-  run;
-  %let r1=0;
-  
-  proc sort data=gasam(keep=iteration%eval(&i)) out=iteration2; by iteration%eval(&i);
-  data iteration2; set iteration2(obs=%eval(&total-10));run;
-  %let r2=0;
-  
-  %do j=1 %to %eval(&boots);
-    proc surveyselect data=iteration out=temp1 NOPRINT
-      method=urs sampsize=%eval(&total-10) outhits;
-    run;
-    
-    proc means noprint data=temp1;
-      var iteration%eval(&i);
-      output out=temp n=__n var=__var mean=__mean;
-    run;
-    
-    data _null_;set temp; call symput('scale1',__n*__mean*__mean/__var/(__n-1));
-    run;
-    
-    %let r1=%sysevalf(&r1+&scale1);
-    
-    proc surveyselect data=iteration2 out=temp2 NOPRINT
-      method=urs sampsize=%eval(&total-10) outhits;
-    run;
-    
-    proc means noprint data=temp2;
-      var iteration%eval(&i);
-      output out=temp n=__n var=__var mean=__mean;
-    run;
-    
-    data _null_;set temp; call symput('scale2',__n*__mean*__mean/__var/(__n-1));
-    run;
-    
-    %let r2=%sysevalf(&r2+&scale2);
-  %end;
-  
-  %let r1=%sysevalf(&r1/&boots);
-  %let r2=%sysevalf(&r2/&boots);
-  
-  data temp1; label counts="Proportion";
-  data temp2; label counts="Proportion";
-  run;
-  
-  %mle(iteration%eval(&i),k=10,alpha=0.05,r=&r1,data=gasam,data2=temp1,id=id);
-  %mle(iteration%eval(&i),k=10,alpha=0.05,r=&r2,data=gasam,data2=temp2,id=id);
-  
-  data _null_; set temp1; call symput('k1',counts);
-  data _null_; set temp2; call symput('k2',counts);
-  run;
-
-  data temp; counts1=&k1; counts2=&k2; scale1=&r1; scale2=&r2;
-  data output; set output temp;
-  run;
-%end;
-
-title "#outliers=&k0";
-proc freq data=output; tables counts1 counts2;
-proc means data=output; var scale1 scale2;
-run;
-
-%mend;
 
 
 
@@ -397,69 +616,5 @@ run;
 
 
 
-# Project: Recursive optimization
-%macro recursive(k0,total=100,itera=2000);
 
-%include "/home/shaopengliu/Outlier_Detecting/MLE_Single.sas";
 
-data GaSam(drop=N r m j k);
-  call streaminit(123);
-  N=&total;
-  r=5;
-  m=18;
-  array iteration[1:%eval(&itera)];
-  do id=1 to N;
-    if id<=%eval(&total-&k0) then do j=1 to %eval(&itera);
-      iteration[j]=2*rand('gamma',r);
-    end;
-    else do j=1 to %eval(&itera);
-      iteration[j]=2*rand('gamma',2);
-      do k=1 to (m-1);
-        iteration[j]=iteration[j]+2*rand('gamma',2);
-      end;
-    end;
-    output;
-  end;
-run;
-
-data output; label counts="Number of outliers" scale="Estimated scale";
-run;
-
-%do i=1 %to %eval(&itera);
-  %let k=-1;
-  %let scale=0;
-  
-  %do %until(&k>&ka);
-    %let k=%eval(&k+1);
-    %let scale0=&scale;
-    proc sort data=gasam(keep=iteration%eval(&i)) out=removed ; by iteration%eval(&i);
-    data removed; set removed(obs=%eval(&total-&k));run; 
-      
-    proc means noprint data=removed;
-      var iteration%eval(&i);
-      output out=temp n=__n var=__var mean=__mean;
-    run;
-  
-    data _null_;set temp; call symput('scale',__n*__mean*__mean/__var/(__n-1));
-    run;
-    
-    data temp1; label counts="Proportion";
-    run;
-    
-    %mle(iteration%eval(&i),k=10,alpha=0.05,r=&scale,data=gasam,data2=temp1,id=id);
-  
-    data _null_; set temp1; call symput('ka',counts);
-    run;
-  %end;
-  
-  data temp2; counts=&ka; scale=&scale0;
-  data output; set output temp2;
-  run;
-%end;
-
-title "#outliers=&k0";
-proc freq data=output; tables counts;
-proc means data=output; var scale;
-run;
-
-%mend;
