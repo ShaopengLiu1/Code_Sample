@@ -2,7 +2,7 @@
 # part1 (line 7-140) : SAS class final project: data cleaning, and modeling for SPB and DBP 
 # part2 (line 150-244): SAS macro for bootstrap resampling
 # part3 (line 250-319): SAS macro for recursive selection for optimization
-# part4 (line 320-600): frequently used SAS procedures and comman
+# part4 (line 320-600): frequently used SAS procedures and command
 ###########################################
 # Part1, SAS class final project:  
 # 1.1, import file
